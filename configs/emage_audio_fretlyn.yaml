@@ -4,7 +4,7 @@ debug: False
 wandb_entity: ''
 wandb_key: ""
 # wandb_log_dir: '/content/outputs/wandb'
-output_dir: ./outputs/
+output_dir: /content/outputs/
 log_period: 1
 seed: 222
 resume_from_checkpoint: null
@@ -15,9 +15,9 @@ data:
   class_name: "BEAT2DatasetEamgeFootContact"
   train_bs: 56
   meta_paths:
-    - "./datasets/data_json/beat2_s20_l64_speaker2.json"
+    - "/content/drive/MyDrive/my-codes/PantoMatrix/datasets/data_json/beat2_s20_l64_speaker2.json"
   test_meta_paths: 
-    - "./datasets/data_json/beat2_s20_l64_speaker2.json"
+    - "/content/drive/MyDrive/my-codes/PantoMatrix/datasets/data_json/beat2_s20_l64_speaker2.json"
   pose_norm: False
   
 

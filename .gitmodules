@@ -1,0 +1,6 @@
+[submodule "BEAT2"]
+	path = BEAT2
+	url = https://huggingface.co/datasets/H-Liu1997/BEAT2
+[submodule "emage_evaltools"]
+	path = emage_evaltools
+	url = https://huggingface.co/H-Liu1997/emage_evaltools

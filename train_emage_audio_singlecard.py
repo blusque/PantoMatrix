@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 
 from diffusers.optimization import get_scheduler
@@ -32,7 +32,7 @@ from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, Emage
 # ---------------------------------  train,val,test fn here --------------------------------- #
 def inference_fn(cfg, model, device, test_path, save_path, **kwargs):
     motion_vq = kwargs["motion_vq"]
-    actual_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+    actual_model = model
     actual_model.eval()
     test_list = []
     for data_meta_path in test_path:
@@ -211,7 +211,6 @@ def main(cfg):
     local_rank = int(os.environ["LOCAL_RANK"]) if "LOCAL_RANK" in os.environ else 0
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
-    torch.distributed.init_process_group(backend="nccl")
     log_dir = os.path.join(cfg.output_dir, cfg.exp_name)
     experiment_ckpt_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(experiment_ckpt_dir, exist_ok=True)
@@ -247,8 +246,7 @@ def main(cfg):
   
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     for name, param in model.named_parameters():
-        param.requires_grad = True  
-    model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True, broadcast_buffers=False)
+        param.requires_grad = True
 
     # optimizer
     optimizer_cls = torch.optim.Adam
@@ -272,10 +270,8 @@ def main(cfg):
     # dataset
     train_dataset = init_class(cfg.data.name_pyfile, cfg.data.class_name, cfg, split='train')
     test_dataset = init_class(cfg.data.name_pyfile, cfg.data.class_name, cfg, split='test')
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=cfg.data.train_bs, sampler=train_sampler, drop_last=True, num_workers=8)
-    test_loader = DataLoader(test_dataset, batch_size=cfg.data.train_bs, sampler=test_sampler, drop_last=False, num_workers=8)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.data.train_bs, shuffle=True, drop_last=True, num_workers=8)
+    test_loader = DataLoader(test_dataset, batch_size=cfg.data.train_bs, drop_last=False, num_workers=8)
 
     # resume
     if cfg.resume_from_checkpoint:
@@ -307,7 +303,7 @@ def main(cfg):
     # train loop
     epoch = start_epoch
     while iteration < cfg.solver.max_train_steps:
-        train_sampler.set_epoch(epoch)
+        # train_sampler.set_epoch(epoch)
         data_start = time.time()
         pbar = tqdm(train_loader, leave=True)
         for i, batch in enumerate(pbar):
@@ -364,7 +360,6 @@ def main(cfg):
 
     if local_rank == 0 and cfg.validation.wandb:
         wandb.finish()
-    torch.distributed.destroy_process_group()
 
 
 # ---------------------------------  utils fn here --------------------------------- #
@@ -488,7 +483,7 @@ def log_test(model, metrics, iteration, best_mertics, best_iteration, cfg, local
         if metrics["fgd"] < best_mertics:
             best_mertics = metrics["fgd"]
             best_iteration = iteration
-            model.module.save_pretrained(os.path.join(experiment_ckpt_dir, "test_best"))
+            model.save_pretrained(os.path.join(experiment_ckpt_dir, "test_best"))
         # print(metrics, best_mertics, best_iteration)
         message = f"Current Test FGD: {metrics['fgd']:.4f} (Best: {best_mertics:.4f} at iteration {best_iteration})"
         log_metric_with_box(message)
@@ -529,12 +524,12 @@ def save_last_and_best_ckpt(model, optimizer, lr_scheduler, iteration, save_dir,
             "iteration": iteration,
         }
     torch.save(checkpoint, os.path.join(save_dir, "last.bin"))
-    model.module.save_pretrained(os.path.join(save_dir, "last"))
+    model.save_pretrained(os.path.join(save_dir, "last"))
     if (lower_is_better and current < previous_best) or (not lower_is_better and current > previous_best):
         previous_best = current
         best_iteration = iteration
         shutil.copy(os.path.join(save_dir, "last.bin"), os.path.join(save_dir, "best.bin"))
-        model.module.save_pretrained(os.path.join(save_dir, "best"))
+        model.save_pretrained(os.path.join(save_dir, "best"))
     message = f"Current interation {iteration} {mertic_name}: {current:.4f} (Best: {previous_best:.4f} at iteration {best_iteration})"
     log_metric_with_box(message)
     return previous_best, best_iteration
@@ -602,7 +597,7 @@ def init_env():
     current_dir = Path.cwd()
     py_files = []
     for py_file in current_dir.rglob('*.py'):
-        if save_dir.split('/')[1] not in str(py_file):
+        if 'outputs' not in str(py_file):
             py_files.append(py_file)
     for py_file in py_files:
         if sanity_check_dir not in str(py_file):
