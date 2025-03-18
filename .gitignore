@@ -4,3 +4,6 @@
 ./emage_evaltools/
 ./datasets/data_json/*
 outputs
+checkpoints
+data
+*_weights/

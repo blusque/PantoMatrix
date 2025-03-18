@@ -4,17 +4,27 @@ import torch
 import smplx
 from tqdm import tqdm
 
-root_dir = './BEAT2/beat_english_v2.0.0/smplxflame_30'
-output_dir = "./BEAT2/beat_english_v2.0.0/footcontact"
+# root_dir = './BEAT2/beat_english_v2.0.0/smplxflame_30'
+# output_dir = "./BEAT2/beat_english_v2.0.0/footcontact"
+root_dir = './data/fretlyn/smplxflame_30'
+output_dir = "./data/fretlyn/footcontact"
+# root_dir = './BEAT2/beat_chinese_v2.0.0/smplxflame_30'
+# output_dir = "./BEAT2/beat_chinese_v2.0.0/footcontact"
 os.makedirs(output_dir, exist_ok=True)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+num_betas = 10
+data_file = os.listdir(root_dir)[0]
+data = np.load(os.path.join(root_dir, data_file), allow_pickle=True)
+betas = data["betas"]
+num_betas = len(betas)
 model = smplx_model = smplx.create(
     "./emage_evaltools/smplx_models/",
     model_type='smplx',
     gender='NEUTRAL_2020',
     use_face_contour=False,
-    num_betas=300,
+    num_betas=num_betas,
     num_expression_coeffs=100,
     ext='npz',
     use_pca=False,
@@ -33,7 +43,7 @@ for data_file in tqdm(os.listdir(root_dir)):
     else:
         exps = np.zeros((poses.shape[0], 100))
     n, c = poses.shape
-    betas = betas.reshape(1, 300)
+    betas = betas.reshape(1, len(betas))
     betas = np.tile(betas, (n, 1))
     betas = torch.from_numpy(betas).float().to(device)
     poses = torch.from_numpy(poses.reshape(n, c)).float().to(device)

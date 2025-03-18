@@ -6,6 +6,7 @@ import copy
 from transformers import PreTrainedModel
 from .configuration_emage_audio import EmageAudioConfig, EmageVQVAEConvConfig, EmageVAEConvConfig
 from .processing_emage_audio import Quantizer, VQEncoderV5, VQDecoderV5, WavEncoder, MLP, PeriodicPositionalEncoding, VQEncoderV6, recover_from_mask_ts, rotation_6d_to_axis_angle, velocity2position, axis_angle_to_rotation_6d, rotation_6d_to_matrix, matrix_to_axis_angle, axis_angle_to_matrix, matrix_to_rotation_6d
+from .modeling_emage_audio import EmageVAEConv, EmageVQVAEConv
 
 
 def inverse_selection_tensor(filtered_t, selection_array, n):
@@ -16,107 +17,42 @@ def inverse_selection_tensor(filtered_t, selection_array, n):
         original_shape_t[i, selected_indices] = filtered_t[i]
     return original_shape_t
 
-class EmageVAEConv(PreTrainedModel):
-    config_class = EmageVAEConvConfig
-    base_model_prefix = "emage_vaeconv"
-    def __init__(self, config):
-        super().__init__(config)
-        self.encoder = VQEncoderV5(config)
-        self.decoder = VQDecoderV5(config)
-        
-    def forward(self, inputs):
-        pre_latent = self.encoder(inputs)
-        rec_pose = self.decoder(pre_latent)
-        return {
-            "rec_pose": rec_pose
-            }
-
-class EmageVQVAEConv(PreTrainedModel):
-    config_class = EmageVQVAEConvConfig
-    base_model_prefix = "emage_vqvaeconv"
-    def __init__(self, config):
-        super().__init__(config)
-        self.encoder = VQEncoderV5(config)
-        self.quantizer = Quantizer(config.vae_codebook_size, config.vae_length, config.vae_quantizer_lambda)
-        self.decoder = VQDecoderV5(config)
-    def forward(self, inputs):
-        pre_latent = self.encoder(inputs)
-        embedding_loss, vq_latent, _, perplexity = self.quantizer(pre_latent)
-        rec_pose = self.decoder(vq_latent)
-        return {"poses_feat":vq_latent,"embedding_loss":embedding_loss,"perplexity":perplexity,"rec_pose": rec_pose}
-    def map2index(self, inputs):
-        pre_latent = self.encoder(inputs)
-        index = self.quantizer.map2index(pre_latent)
-        return index
-    def map2latent(self, inputs):
-        pre_latent = self.encoder(inputs)
-        index = self.quantizer.map2index(pre_latent)
-        z_q = self.quantizer.get_codebook_entry(index)
-        return z_q
-    def decode(self, index):
-        z_q = self.quantizer.get_codebook_entry(index)
-        rec_pose = self.decoder(z_q)
-        return rec_pose
-    def decode_from_latent(self, latent):
-        # print(latent.shape)
-        z_flattened = latent.contiguous().view(-1, self.quantizer.e_dim)
-
-        d = torch.sum(z_flattened**2, dim=1, keepdim=True) + torch.sum(self.quantizer.embedding.weight**2, dim=1) - 2*torch.matmul(z_flattened, self.quantizer.embedding.weight.t())
-        min_encoding_indices = torch.argmin(d, dim=1)
-        # print(min_encoding_indices.shape)
-        indices = min_encoding_indices.view(latent.shape[0], latent.shape[1])
-        z_q = self.quantizer.get_codebook_entry(indices)
-        rec_pose = self.decoder(z_q)
-        return rec_pose
-
-class EmageVQModel(nn.Module):
-    def __init__(self, face_model, upper_model, hands_model, lower_model, global_model):
+class EmageVQModelForFretlyn(nn.Module):
+    def __init__(self, face_model: EmageVQVAEConv, upper_model: EmageVQVAEConv, hands_model: EmageVQVAEConv, lower_model: EmageVQVAEConv, global_model: EmageVAEConv):
         super().__init__()
-        self.joint_mask_upper = [
-          False, False, False, True, False, False, True, False, False, True,
-          False, False, True, True, True, True, True, True, True, True,
-          True, True, False, False, False, False, False, False, False, False,
-          False, False, False, False, False, False, False, False, False, False,
-          False, False, False, False, False, False, False, False, False, False,
-          False, False, False, False, False
-        ]
-        self.joint_mask_lower = [
-          True, True, True, False, True, True, False, True, True, False,
-          True, True, False, False, False, False, False, False, False, False,
-          False, False, False, False, False, False, False, False, False, False,
-          False, False, False, False, False, False, False, False, False, False,
-          False, False, False, False, False, False, False, False, False, False,
-          False, False, False, False, False
-        ]
+        self.joint_mask_upper = [True] * 51 + [False] * 8
+        self.joint_mask_lower = [False] * 51 + [True] * 8
+        self.joint_mask_hands = []
+
         self.vq_model_face = face_model
         self.vq_model_upper = upper_model
         self.vq_model_hands = hands_model
         self.vq_model_lower = lower_model
         self.global_motion = global_model
 
-    def spilt_inputs(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
-        bs, t, j6 = smplx_body_rot6d.shape
-        smplx_body_rot6d = smplx_body_rot6d.reshape(bs, t, j6//6, 6)
-        jaw_rot6d = smplx_body_rot6d[:, :, 22:23, :].reshape(bs, t, 6)
+    def split_inputs(self, vicon_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        bs, t, j6 = vicon_body_rot6d.shape
+        vicon_body_rot6d = vicon_body_rot6d.reshape(bs, t, j6//6, 6)
+        jaw_rot6d = vicon_body_rot6d[:, :, 22:23, :].reshape(bs, t, 6)
         face = torch.cat([jaw_rot6d, expression], dim=2)
-        upper_rot6d = smplx_body_rot6d[:, :,self.joint_mask_upper, :].reshape(bs, t, 78)
-        hands_rot6d = smplx_body_rot6d[:, :,25:55, :].reshape(bs, t, 180)
-        lower_rot6d = smplx_body_rot6d[:, :,self.joint_mask_lower, :].reshape(bs, t, 54)
-        tar_contact = torch.zeros(bs, t, 4, device=smplx_body_rot6d.device) if tar_contact is None else tar_contact
-        tar_trans = torch.zeros(bs, t, 3, device=smplx_body_rot6d.device) if tar_trans is None else tar_trans
+        upper_rot6d = vicon_body_rot6d[:, :, self.joint_mask_upper, :].reshape(bs, t, 78)
+        hands_rot6d = vicon_body_rot6d[:, :, self.joint_mask_hands, :].reshape(bs, t, 180)
+        lower_rot6d = vicon_body_rot6d[:, :, self.joint_mask_lower, :].reshape(bs, t, 54)
+        tar_contact = torch.zeros(bs, t, 4, device=vicon_body_rot6d.device) if tar_contact is None else tar_contact
+        tar_trans = torch.zeros(bs, t, 3, device=vicon_body_rot6d.device) if tar_trans is None else tar_trans
         lower = torch.cat([lower_rot6d, tar_trans, tar_contact], dim=2)
         return dict(face=face, upper=upper_rot6d, hands=hands_rot6d, lower=lower)
     
-    def map2index(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
-        inputs = self.spilt_inputs(smplx_body_rot6d, expression, tar_contact=tar_contact, tar_trans=tar_trans)
+    def map2index(self, vicon_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        inputs = self.split_inputs(vicon_body_rot6d, expression, tar_contact=tar_contact, tar_trans=tar_trans)
         face_index = self.vq_model_face.map2index(inputs["face"])
         upper_index = self.vq_model_upper.map2index(inputs["upper"])
         hands_index = self.vq_model_hands.map2index(inputs["hands"])
         lower_index = self.vq_model_lower.map2index(inputs["lower"])
         return dict(face=face_index, upper=upper_index, hands=hands_index, lower=lower_index)
     
-    def map2latent(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
-        inputs = self.spilt_inputs(smplx_body_rot6d, expression,tar_contact=tar_contact, tar_trans=tar_trans)
+    def map2latent(self, vicon_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        inputs = self.split_inputs(vicon_body_rot6d, expression,tar_contact=tar_contact, tar_trans=tar_trans)
         face_latent = self.vq_model_face.map2latent(inputs["face"])
         upper_latent = self.vq_model_upper.map2latent(inputs["upper"])
         hands_latent = self.vq_model_hands.map2latent(inputs["hands"])
@@ -205,7 +141,7 @@ class EmageVQModel(nn.Module):
         return global_motion
 
 
-class EmageAudioModel(PreTrainedModel):
+class EmageAudioModelForFretlyn(PreTrainedModel):
     config_class = EmageAudioConfig
     base_model_prefix = "emage_audio"
     def __init__(self, config: EmageAudioConfig):
@@ -277,16 +213,8 @@ class EmageAudioModel(PreTrainedModel):
 
         if audio2face_fea.shape[1] > body_hint_face.shape[1]:
             audio2face_fea = audio2face_fea[:, :body_hint_face.shape[1]]
-        elif audio2face_fea.shape[1] < body_hint_face.shape[1]:
-            body_hint_face = body_hint_face[:, :audio2face_fea.shape[1]]
-            body_hint_body = body_hint_body[:, :audio2face_fea.shape[1]]
         if audio2body_fea.shape[1] > body_hint_face.shape[1]:
-            audio2body_fea = audio2face_fea[:, :body_hint_face.shape[1]]
-        elif audio2body_fea.shape[1] < body_hint_face.shape[1]:
-            body_hint_face = body_hint_face[:, :audio2body_fea.shape[1]]
-            body_hint_body = body_hint_body[:, :audio2body_fea.shape[1]]
-        # print("audio2face_fea: ", audio2face_fea.shape)
-        # print("body_hint_body: ", body_hint_body.shape)
+            audio2face_fea = audio2face_fea[:, :body_hint_face.shape[1]]
 
         bs, t, _ = audio2face_fea.shape
 
@@ -332,8 +260,6 @@ class EmageAudioModel(PreTrainedModel):
         hands_latent = self.motion_out_proj_hands(hands_latent + motion_hands_refine)
         lower_latent = self.motion_out_proj_lower(lower_latent + motion_lower_refine)
 
-        # print("upper latent: ", upper_latent.shape)
-
         # decode body
         classify_upper = self.motion_cls_upper(upper_latent)
         classify_hands = self.motion_cls_hands(hands_latent)
@@ -352,7 +278,7 @@ class EmageAudioModel(PreTrainedModel):
     
     def inference(self, audio, speaker_id, vq_model, masked_motion=None, mask=None):
         # generate default mask and masked motion if not provided
-        length = math.ceil(audio.shape[1] * 30 / 16000)
+        length = audio.shape[1] * 30 // 16000
         bs = audio.shape[0]
 
         fake_axis_angle = torch.zeros(bs, length, 55, 3).to(audio.device)
@@ -448,10 +374,8 @@ class EmageAudioModel(PreTrainedModel):
             )
             final_mask[:, :pre_frames, :] = 0
 
-            # audio_slice_len = (final_end - final_start)*(16000//30)
-            audio_slice_len = math.ceil((final_end - final_start) * 16000 / 30)
-            start_idx = math.ceil(final_start * 16000 / 30)
-            audio_slice = audio[:, start_idx : start_idx+audio_slice_len]
+            audio_slice_len = (final_end - final_start)*(16000//30)
+            audio_slice = audio[:, final_start*(16000//30) : final_start*(16000//30)+audio_slice_len]
             net_out_val = self.forward(audio_slice, speaker_id, masked_motion=final_motion, mask=final_mask, use_audio=True)
 
             _, cls_face =  torch.max(F.log_softmax(net_out_val["cls_face"], dim=2), dim=2)

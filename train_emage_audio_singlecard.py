@@ -22,7 +22,7 @@ from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
 
 from emage_evaltools.mertic import FGD, BC, L1div, LVDFace, MSEFace
-from emage_utils.motion_io import beat_format_load, beat_format_save, MASK_DICT, recover_from_mask
+from emage_utils.motion_io import beat_format_load, beat_format_save, SMPLX_MASK_DICT, recover_from_mask
 import emage_utils.rotation_conversions as rc
 from emage_utils import fast_render
 from emage_utils.motion_rep_transfer import get_motion_rep_numpy

@@ -73,6 +73,7 @@ def main():
     parser.add_argument("--audio_folder", type=str, default="./examples/audio")
     parser.add_argument("--save_folder", type=str, default="./examples/motion")
     parser.add_argument("--visualization", action="store_true")
+    parser.add_argument("--resume_local", action="store_true")
     parser.add_argument("--nopytorch3d", action="store_true")
     args = parser.parse_args()
 
@@ -90,7 +91,10 @@ def main():
       global_model=global_motion_ae).to(device)
     motion_vq.eval()
 
-    model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device)
+    if args.resume_local:
+        model = EmageAudioModel.from_pretrained("./emage_weights/checkpoints/best", local_files_only=True).to(device)
+    else:
+        model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device)
     model.eval()
 
     audio_files = [os.path.join(args.audio_folder, f) for f in os.listdir(args.audio_folder) if f.endswith(".wav")]

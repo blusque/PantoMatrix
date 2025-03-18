@@ -22,7 +22,7 @@ from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
 
 from emage_evaltools.mertic import FGD, BC, L1div, LVDFace, MSEFace
-from emage_utils.motion_io import beat_format_load, beat_format_save, MASK_DICT, recover_from_mask
+from emage_utils.motion_io import beat_format_load, beat_format_save, SMPLX_MASK_DICT, recover_from_mask
 import emage_utils.rotation_conversions as rc
 from emage_utils import fast_render
 from emage_utils.motion_rep_transfer import get_motion_rep_numpy
@@ -257,10 +257,12 @@ def main(cfg):
                                     target_modules=['out_proj', 'motion_proj', 'audio_body_motion_proj'],
                                     lora_alpha=32,
                                     lora_dropout=0.1)
-    if cfg.test:
-        model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device) 
-    else:
-        model = init_hf_class(cfg.model.name_pyfile, cfg.model.class_name, cfg.model).to(device)
+    
+    model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device) 
+    # if cfg.test:
+    #     model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device) 
+    # else:
+    #     model = init_hf_class(cfg.model.name_pyfile, cfg.model.class_name, cfg.model).to(device)
     model = get_peft_model(model, audio_model_config)
   
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)

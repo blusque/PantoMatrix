@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import smplx
 
-MASK_DICT = {
+SMPLX_MASK_DICT = {
     "local_upper": [
         False, False, False, True, False, False, True, False, False, True,
         False, False, True, True, True, True, True, True, True, True,
@@ -12,6 +12,11 @@ MASK_DICT = {
         True, True, True, True, True
     ],
     "local_full": [False] + [True]*54
+}
+
+FRETLYN_MASK_DICT = {
+    'local_upper': [True] * 51 + [False] * 8,
+    'local_full': [True] * 59
 }
 
 def select_with_mask(motion: np.ndarray, mask: list[bool]) -> np.ndarray:
@@ -164,10 +169,15 @@ def beat_format_save(
 
 def beat_format_load(load_path: str, mask: list[bool] = None):
     data = np.load(load_path, allow_pickle=True)
-    poses = data['poses']
-    betas = data['betas']
-    expressions = data['expressions']
-    trans = data['trans']
+    poses = data['poses'].astype(np.float32)
+    betas = data['betas'].astype(np.float32)
+    if betas.shape[0] < 300:
+        padding = np.zeros((300 - betas.shape[0]), dtype=betas.dtype)
+        betas = np.concatenate([betas, padding], axis=0)
+    assert betas.shape[0] == 300
+    expressions = data.get('expressions', np.zeros((poses.shape[0], 100), dtype=poses.dtype)).astype(np.float32)
+    trans = data['trans'].astype(np.float32)
+    frame_rate = data.get('mocap_frame_rate', 30)
 
     if mask is not None:
         poses = select_with_mask(poses, mask)
@@ -176,5 +186,6 @@ def beat_format_load(load_path: str, mask: list[bool] = None):
         "poses": poses,
         "betas": betas,
         "expressions": expressions,
-        "trans": trans
+        "trans": trans,
+        "mocap_frame_rate": frame_rate
     }

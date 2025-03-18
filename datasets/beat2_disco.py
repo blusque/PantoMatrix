@@ -32,7 +32,7 @@ import librosa
 import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
-from emage_utils.motion_io import beat_format_load, MASK_DICT
+from emage_utils.motion_io import beat_format_load, SMPLX_MASK_DICT
 
 class BEAT2DatasetDisco(Dataset):
     def __init__(self, cfg, split):
@@ -42,7 +42,7 @@ class BEAT2DatasetDisco(Dataset):
         self.vid_meta = [i for i in vid_meta if i.get("mode") == split]
         self.mean = 0
         self.std = 1
-        self.joint_mask = MASK_DICT[cfg.model.joint_mask] if cfg.model.joint_mask else None
+        self.joint_mask = SMPLX_MASK_DICT[cfg.model.joint_mask] if cfg.model.joint_mask else None
         self.data_list = self.vid_meta
         self.fps = cfg.model.pose_fps
         self.audio_sr = cfg.model.audio_sr

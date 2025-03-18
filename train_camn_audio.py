@@ -22,7 +22,7 @@ from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
 
 from emage_evaltools.mertic import FGD, BC, L1div
-from emage_utils.motion_io import beat_format_load, beat_format_save, MASK_DICT, recover_from_mask, recover_from_mask_ts
+from emage_utils.motion_io import beat_format_load, beat_format_save, SMPLX_MASK_DICT, recover_from_mask, recover_from_mask_ts
 import emage_utils.rotation_conversions as rc
 from emage_utils import fast_render
 from emage_utils.motion_rep_transfer import get_motion_rep_numpy
@@ -91,7 +91,7 @@ def inference_fn(cfg, model, device, test_path, save_path):
 def train_val_fn(cfg, batch, model, device, mode="train", optimizer=None, lr_scheduler=None, fgd_evaluator=None):
     model.train() if mode == "train" else model.eval()
     torch.set_grad_enabled(mode == "train")
-    joint_mask = MASK_DICT[cfg.model.joint_mask]
+    joint_mask = SMPLX_MASK_DICT[cfg.model.joint_mask]
     if mode == "train":
         optimizer.zero_grad()
     motion_gt = batch["motion"].to(device)
