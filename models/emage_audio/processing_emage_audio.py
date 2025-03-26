@@ -139,7 +139,7 @@ class Quantizer(nn.Module):
         self.n_e = n_e
         self.beta = beta
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
-        self.embedding.weight.data.uniform_(-1.0/self.n_e, 1.0/self.n_e)
+        self.init_weights()
 
     def forward(self, z):
         assert z.shape[-1] == self.e_dim
@@ -168,6 +168,75 @@ class Quantizer(nn.Module):
         z_q = self.embedding(index_flattened)
         z_q = z_q.view(indices.shape+(self.e_dim,)).contiguous()
         return z_q
+
+    def init_weights(self, method='uniform'):
+        if method == 'uniform':
+            self.embedding.weight.data.uniform_(-1.0/self.n_e, 1.0/self.n_e)
+        else:
+            raise ValueError(f'Method {method} not implemented')
+
+
+class ResidualQuantizer(nn.Module):
+    def __init__(self, n_e, e_dim, beta, layers=4, init_method='uniform'):
+        super().__init__()
+        self.n_e = n_e
+        self.e_dim = e_dim
+        self.beta = beta
+        self.layers = layers
+        rvq = []
+        for _ in range(layers):
+            rvq.append(Quantizer(self.n_e, self.e_dim, self.beta))
+        self.quantizers = nn.ModuleList(rvq)
+        for quantizer in self.quantizers:
+            quantizer.init_weights(init_method)
+
+
+    def forward(self, z):
+        assert z.shape[-1] == self.e_dim
+        total_loss = []
+        residual = z
+        total_z_q = []
+        total_indices = []
+        total_perplexity = []
+        loss, z_q, indices, perplexity = self.quantizers[0](residual)
+        for quantizer in self.quantizers:
+            loss, z_q, indices, perplexity = quantizer(residual)
+            total_loss.append(loss)
+            residual = residual.clone() - z_q
+            total_z_q.append(z_q)
+            total_indices.append(indices)
+            total_perplexity.append(perplexity)
+        z_q = torch.zeros_like(total_z_q[0])
+        for r in total_z_q:
+            z_q += r
+        loss = torch.zeros_like(total_loss[0])
+        for l in total_loss:
+            loss += l
+        return loss, z_q, total_indices, total_perplexity
+
+    def map2index(self, z):
+        assert z.shape[-1] == self.e_dim
+        residual = z.clone()
+        indices = []
+        for quantizer in self.quantizers:
+            indices.append(quantizer.map2index(residual))
+        return indices
+
+    def get_codebook_entry(self, indices_list):
+        z_qs = []
+        for i, indices in enumerate(indices_list):
+            index_flattened = indices.view(-1)
+            z_q = self.quantizers[i].embedding(index_flattened)
+            z_q = z_q.view(indices.shape+(self.e_dim,)).contiguous()
+            z_qs.append(z_q)
+        return z_qs
+
+    def cumsum(self, residuals):
+        result = torch.zeros_like(residuals[0]).to(residuals[0].device)
+        for residual in residuals:
+            result += residual
+        return result
+        
 
 def init_weight(m):
     if isinstance(m, nn.Conv1d) or isinstance(m, nn.Linear) or isinstance(m, nn.ConvTranspose1d):

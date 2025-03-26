@@ -7,3 +7,4 @@ outputs
 checkpoints
 data
 *_weights/
+*.log

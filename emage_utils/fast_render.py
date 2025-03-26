@@ -175,7 +175,18 @@ def distribute_frames_no_gt(frames, vertices_all):
         sid += 1
     return subproc_frame_ids, subproc_vertices
 
-def generate_silent_videos(frames, vertices_all, vertices1_all, faces, output_dir):
+def generate_silent_videos(frames, vertices_all, vertices1_all, faces, output_dir, rotation=None):
+    if rotation is not None:
+        new_vertices_all = []
+        for vertices in vertices_all:
+            vertices = rotation.apply(vertices)
+            new_vertices_all.append(vertices)
+        vertices_all = new_vertices_all.copy()
+        new_vertices1_all = []
+        for vertices in vertices1_all:
+            vertices = rotation.apply(vertices)
+            new_vertices1_all.append(vertices)
+        vertices1_all = new_vertices1_all.copy()
     ids, verts = distribute_frames(frames, vertices_all, vertices1_all)
     with multiprocessing.Pool(args['render_concurrent_num']) as pool:
         pool.starmap(sub_process_process_frame, [
@@ -320,7 +331,7 @@ def render_one_sequence_with_face(res_npz_path, output_dir, audio_path, model_fo
     os.remove(sfile)
     return final_clip
 
-def render_one_sequence(res_npz_path, gt_npz_path, output_dir, audio_path, model_folder="/data/datasets/smplx_models/", model_type='smplx', gender='NEUTRAL_2020', ext='npz', num_betas=300, num_expression_coeffs=100, use_face_contour=False, use_matplotlib=False, remove_transl=True):
+def render_one_sequence(res_npz_path, gt_npz_path, output_dir, audio_path, model_folder="/data/datasets/smplx_models/", model_type='smplx', gender='NEUTRAL_2020', ext='npz', num_betas=300, num_expression_coeffs=100, use_face_contour=False, use_matplotlib=False, remove_transl=True, rotation=None):
     import smplx
     import torch
     data_np_body = np.load(res_npz_path, allow_pickle=True)
@@ -330,9 +341,15 @@ def render_one_sequence(res_npz_path, gt_npz_path, output_dir, audio_path, model
     faces = np.load(f"{model_folder}/smplx/SMPLX_NEUTRAL_2020.npz", allow_pickle=True)["f"]
     n = data_np_body["poses"].shape[0]
     model = smplx.create(model_folder, model_type=model_type, gender=gender, use_face_contour=use_face_contour, num_betas=num_betas, num_expression_coeffs=num_expression_coeffs, ext=ext, use_pca=False).cuda()
-    beta = torch.from_numpy(data_np_body["betas"]).to(torch.float32).unsqueeze(0).cuda()
+    beta = data_np_body["betas"]
+    if len(beta) < 300:
+        temp = np.zeros(300)
+        temp[:len(beta)] = beta
+        beta = temp.copy()
+    beta = torch.from_numpy(beta).to(torch.float32).unsqueeze(0).cuda()
     beta = beta.repeat(n, 1)
-    expression = torch.from_numpy(data_np_body["expressions"][:n]).to(torch.float32).cuda()
+    expression = data_np_body.get("expressions", np.zeros((n, 100), dtype=np.float32))
+    expression = torch.from_numpy(expression).to(torch.float32).cuda()
     jaw_pose = torch.from_numpy(data_np_body["poses"][:n, 66:69]).to(torch.float32).cuda()
     pose = torch.from_numpy(data_np_body["poses"][:n]).to(torch.float32).cuda()
     transl = torch.from_numpy(data_np_body["trans"][:n]).to(torch.float32).cuda()
@@ -340,8 +357,15 @@ def render_one_sequence(res_npz_path, gt_npz_path, output_dir, audio_path, model
         transl = transl[0:1].repeat(n, 1)
     output = model(betas=beta, transl=transl, expression=expression, jaw_pose=jaw_pose, global_orient=pose[:,:3], body_pose=pose[:,3:21*3+3], left_hand_pose=pose[:,25*3:40*3], right_hand_pose=pose[:,40*3:55*3], leye_pose=pose[:,69:72], reye_pose=pose[:,72:75], return_verts=True)
     vertices_all = output["vertices"].cpu().numpy()
-    beta1 = torch.from_numpy(gt_np_body["betas"]).to(torch.float32).unsqueeze(0).cuda()
-    expression1 = torch.from_numpy(gt_np_body["expressions"][:n]).to(torch.float32).cuda()
+    beta1 = data_np_body["betas"]
+    if len(beta1) < 300:
+        temp = np.zeros(300)
+        temp[:len(beta1)] = beta1
+        beta1 = temp.copy()
+    beta1 = torch.from_numpy(beta1).to(torch.float32).unsqueeze(0).cuda()
+    beta1 = beta1.repeat(n, 1)
+    expression1 = data_np_body.get("expressions", np.zeros((n, 100), dtype=np.float32))
+    expression1 = torch.from_numpy(expression1).to(torch.float32).cuda()
     jaw_pose1 = torch.from_numpy(gt_np_body["poses"][:n,66:69]).to(torch.float32).cuda()
     pose1 = torch.from_numpy(gt_np_body["poses"][:n]).to(torch.float32).cuda()
     transl1 = torch.from_numpy(gt_np_body["trans"][:n]).to(torch.float32).cuda()
@@ -353,7 +377,7 @@ def render_one_sequence(res_npz_path, gt_npz_path, output_dir, audio_path, model
         seconds = 1
     else:
         seconds = vertices_all.shape[0]//30
-    sfile = generate_silent_videos(int(seconds*args['render_video_fps']), vertices_all, vertices1_all, faces, output_dir)
+    sfile = generate_silent_videos(int(seconds*args['render_video_fps']), vertices_all, vertices1_all, faces, output_dir, rotation=rotation)
     base = os.path.splitext(os.path.basename(res_npz_path))[0]
     final_clip = os.path.join(output_dir, f"{base}.mp4")
     add_audio_to_video(sfile, audio_path, final_clip)
@@ -369,9 +393,15 @@ def render_one_sequence_no_gt(res_npz_path, output_dir, audio_path, model_folder
     faces = np.load(f"{model_folder}/smplx/SMPLX_NEUTRAL_2020.npz", allow_pickle=True)["f"]
     n = data_np_body["poses"].shape[0]
     model = smplx.create(model_folder, model_type=model_type, gender=gender, use_face_contour=use_face_contour, num_betas=num_betas, num_expression_coeffs=num_expression_coeffs, ext=ext, use_pca=False).cuda()
-    beta = torch.from_numpy(data_np_body["betas"]).to(torch.float32).unsqueeze(0).cuda()
+    beta = data_np_body["betas"]
+    if len(beta) < 300:
+        temp = np.zeros(300)
+        temp[:len(beta)] = beta
+        beta = temp.copy()
+    beta = torch.from_numpy(beta).to(torch.float32).unsqueeze(0).cuda()
     beta = beta.repeat(n, 1)
-    expression = torch.from_numpy(data_np_body["expressions"][:n]).to(torch.float32).cuda()
+    expression = data_np_body.get("expressions", np.zeros((n, 100), dtype=np.float32))
+    expression = torch.from_numpy(expression).to(torch.float32).cuda()
     jaw_pose = torch.from_numpy(data_np_body["poses"][:n, 66:69]).to(torch.float32).cuda()
     pose = torch.from_numpy(data_np_body["poses"][:n]).to(torch.float32).cuda()
     transl = torch.from_numpy(data_np_body["trans"][:n]).to(torch.float32).cuda()

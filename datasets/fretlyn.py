@@ -17,10 +17,10 @@ class FretlynDataset(data.Dataset):
         self.vid_meta = [item for item in vid_meta if item.get("mode") == split]
         self.mean = 0
         self.std = 1
-        self.joint_mask = SMPLX_MASK_DICT[cfg.model.joint_mask] if cfg.model.joint_mask is not None else None
+        self.joint_mask = SMPLX_MASK_DICT[cfg.data.joint_mask] if cfg.data.joint_mask is not None else None
         self.data_list = self.vid_meta
-        self.fps = cfg.model.pose_fps
-        self.audio_sr = cfg.model.audio_sr
+        self.fps = cfg.data.pose_fps
+        self.audio_sr = cfg.data.audio_sr
 
     def __len__(self):
         return len(self.data_list)
@@ -70,6 +70,7 @@ class FretlynDatasetEamge(FretlynDataset):
         motion = smplx_data["poses"][sdx:edx]
         expressions = smplx_data["expressions"][sdx:edx]
         trans = smplx_data["trans"][sdx:edx]
+        betas = smplx_data["betas"]
         SMPLX_FPS = smplx_data['mocap_frame_rate']
         downsample_factor = int(SMPLX_FPS // self.fps)
         motion = motion[::downsample_factor]
@@ -92,6 +93,7 @@ class FretlynDatasetEamge(FretlynDataset):
             motion=motion_tensor,
             audio=audio_tensor, 
             expressions=expressions_tesnor,
+            betas=betas,
             trans=trans_tensor,
         )
 
@@ -109,6 +111,7 @@ class FretlynDatasetEamgeFootContact(FretlynDataset):
         motion = smplx_data["poses"][sdx:edx]
         expressions = smplx_data["expressions"][sdx:edx]
         trans = smplx_data["trans"][sdx:edx]
+        betas = smplx_data["betas"]
         foot_contact = np.load(data_item["motion_path"].replace("smplxflame_30", "footcontact").replace(".npz", ".npy"))[sdx:edx]
 
         SMPLX_FPS = smplx_data['mocap_frame_rate']
@@ -135,6 +138,7 @@ class FretlynDatasetEamgeFootContact(FretlynDataset):
             motion=motion_tensor,
             audio=audio_tensor, 
             expressions=expressions_tesnor,
+            betas=betas,
             trans=trans_tensor,
             foot_contact=foot_contact_tensor,
         )

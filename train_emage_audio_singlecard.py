@@ -15,8 +15,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-# from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
+import math
 
 from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
@@ -27,12 +28,12 @@ import emage_utils.rotation_conversions as rc
 from emage_utils import fast_render
 from emage_utils.motion_rep_transfer import get_motion_rep_numpy
 from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, EmageAudioModel
-
+from peft import LoraConfig, get_peft_model, TaskType
 
 # ---------------------------------  train,val,test fn here --------------------------------- #
 def inference_fn(cfg, model, device, test_path, save_path, **kwargs):
     motion_vq = kwargs["motion_vq"]
-    actual_model = model
+    actual_model = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
     actual_model.eval()
     test_list = []
     for data_meta_path in test_path:
@@ -54,10 +55,16 @@ def inference_fn(cfg, model, device, test_path, save_path, **kwargs):
         poses = torch.from_numpy(motion_data["poses"]).unsqueeze(0).to(device).float()
         foot_contact = torch.from_numpy(np.load(test_file["motion_path"].replace("smplxflame_30", "footcontact").replace(".npz", ".npy"))).unsqueeze(0).to(device).float()
         trans = torch.from_numpy(motion_data["trans"]).unsqueeze(0).to(device).float()
-        expression = torch.from_numpy(motion_data["expressions"]).unsqueeze(0).to(device).float()
+        if "expressions" in motion_data:
+            expression = torch.from_numpy(motion_data["expressions"]).unsqueeze(0).to(device).float()
+        else:
+            expression = torch.zeros(poses.shape[0], 100).unsqueeze(0).to(device).float()
         bs, t, _ = poses.shape
         poses_6d = rc.axis_angle_to_rotation_6d(poses.reshape(bs, t, -1, 3)).reshape(bs, t, -1)
         masked_motion = torch.cat([poses_6d, trans, foot_contact], dim=-1) # bs t 337
+
+        downsample_factor = math.ceil(motion_data['mocap_frame_rate'] // cfg.pose_fps)
+        masked_motion = masked_motion[:, ::downsample_factor]
 
         # reconstrcution check
         # latent_dict = motion_vq.map2latent(poses_6d, expression, tar_contact=foot_contact, tar_trans=trans)
@@ -149,6 +156,7 @@ def train_val_fn(cfg, batch, model, device, mode="train", **kwargs):
     latent_index_dict = motion_vq.map2index(motion_gt, expressions_gt, tar_contact = foot_contact, tar_trans = trans)
     latent_dict = motion_vq.map2latent(motion_gt, expressions_gt, tar_contact = foot_contact, tar_trans = trans)
     masked_motion = torch.cat([motion_gt, trans, foot_contact], dim=-1)
+    # print(masked_motion.shape)
     # forward use audio
     mask = torch.ones_like(masked_motion).to(device)
     mask[:, :cfg.model.seed_frames] = 0
@@ -211,6 +219,7 @@ def main(cfg):
     local_rank = int(os.environ["LOCAL_RANK"]) if "LOCAL_RANK" in os.environ else 0
     torch.cuda.set_device(local_rank)
     device = torch.device("cuda", local_rank)
+    # torch.distributed.init_process_group(backend="nccl")
     log_dir = os.path.join(cfg.output_dir, cfg.exp_name)
     experiment_ckpt_dir = os.path.join(log_dir, "checkpoints")
     os.makedirs(experiment_ckpt_dir, exist_ok=True)
@@ -239,14 +248,31 @@ def main(cfg):
         param.requires_grad = False
     motion_vq.eval()
     
+    if str.lower(cfg.peft) == 'lora':
+        config = LoraConfig(peft_type=TaskType.FEATURE_EXTRACTION,
+                            inference_mode=False,
+                            r=8,
+                            target_modules=['out_proj', 'motion_proj', 'audio_body_motion_proj'],
+                            lora_alpha=32,
+                            lora_dropout=0.1)
+        
     if cfg.test:
-        model = EmageAudioModel.from_pretrained("/content/drive/MyDrive/weights/emage3/best").to(device) 
+        model = EmageAudioModel.from_pretrained("./emage_weights/checkpoints/test_best").to(device) 
+    elif cfg.finetune:
+        if cfg.local_pretrained is None:
+            model = EmageAudioModel.from_pretrained("H-Liu1997/emage_audio").to(device) 
+        else:
+            model = EmageAudioModel.from_pretrained(cfg.local_pretrained).to(device)
     else:
         model = init_hf_class(cfg.model.name_pyfile, cfg.model.class_name, cfg.model).to(device)
+    
+    if str.lower(cfg.peft) == 'lora':
+        model = get_peft_model(model, config)
   
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     for name, param in model.named_parameters():
-        param.requires_grad = True
+        param.requires_grad = True  
+    # model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True, broadcast_buffers=False)
 
     # optimizer
     optimizer_cls = torch.optim.Adam
@@ -270,6 +296,8 @@ def main(cfg):
     # dataset
     train_dataset = init_class(cfg.data.name_pyfile, cfg.data.class_name, cfg, split='train')
     test_dataset = init_class(cfg.data.name_pyfile, cfg.data.class_name, cfg, split='test')
+    # train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    # test_sampler = torch.utils.data.distributed.DistributedSampler(test_dataset)
     train_loader = DataLoader(train_dataset, batch_size=cfg.data.train_bs, shuffle=True, drop_last=True, num_workers=8)
     test_loader = DataLoader(test_dataset, batch_size=cfg.data.train_bs, drop_last=False, num_workers=8)
 
@@ -303,7 +331,6 @@ def main(cfg):
     # train loop
     epoch = start_epoch
     while iteration < cfg.solver.max_train_steps:
-        # train_sampler.set_epoch(epoch)
         data_start = time.time()
         pbar = tqdm(train_loader, leave=True)
         for i, batch in enumerate(pbar):
@@ -483,7 +510,7 @@ def log_test(model, metrics, iteration, best_mertics, best_iteration, cfg, local
         if metrics["fgd"] < best_mertics:
             best_mertics = metrics["fgd"]
             best_iteration = iteration
-            model.save_pretrained(os.path.join(experiment_ckpt_dir, "test_best"))
+            model.module.save_pretrained(os.path.join(experiment_ckpt_dir, "test_best"))
         # print(metrics, best_mertics, best_iteration)
         message = f"Current Test FGD: {metrics['fgd']:.4f} (Best: {best_mertics:.4f} at iteration {best_iteration})"
         log_metric_with_box(message)
@@ -524,12 +551,12 @@ def save_last_and_best_ckpt(model, optimizer, lr_scheduler, iteration, save_dir,
             "iteration": iteration,
         }
     torch.save(checkpoint, os.path.join(save_dir, "last.bin"))
-    model.save_pretrained(os.path.join(save_dir, "last"))
+    model.module.save_pretrained(os.path.join(save_dir, "last"))
     if (lower_is_better and current < previous_best) or (not lower_is_better and current > previous_best):
         previous_best = current
         best_iteration = iteration
         shutil.copy(os.path.join(save_dir, "last.bin"), os.path.join(save_dir, "best.bin"))
-        model.save_pretrained(os.path.join(save_dir, "best"))
+        model.module.save_pretrained(os.path.join(save_dir, "best"))
     message = f"Current interation {iteration} {mertic_name}: {current:.4f} (Best: {previous_best:.4f} at iteration {best_iteration})"
     log_metric_with_box(message)
     return previous_best, best_iteration
@@ -555,9 +582,6 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.enabled = True
 
 def init_env():
     parser = argparse.ArgumentParser()
@@ -567,6 +591,9 @@ def init_env():
     parser.add_argument("--visualization", action="store_true")
     parser.add_argument("--evaluation", action="store_true")
     parser.add_argument("--test", action="store_true")
+    parser.add_argument("--finetune", action="store_true")
+    parser.add_argument("--resume_local_from", type=str, default=None)
+    parser.add_argument("--peft", type=str, default=None)
     parser.add_argument('overrides', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     config = OmegaConf.load(args.config)
@@ -588,6 +615,13 @@ def init_env():
         config.validation.evaluation = True
     if args.test:
         config.test = True
+    if args.finetune:
+        config.finetune = True
+    if args.resume_local_from:
+        config.local_pretrained = f"./emage_weights/{args.resume_local_from}/best"
+    if args.peft:
+        config.peft = args.peft
+    assert str.lower(config.peft) in ["lora"], f"Unsupported PEFT method {config.peft}"
     save_dir = os.path.join(config.output_dir, config.exp_name)
     os.makedirs(save_dir, exist_ok=True)
     sanity_check_dir = os.path.join(save_dir, 'sanity_check')
@@ -597,7 +631,7 @@ def init_env():
     current_dir = Path.cwd()
     py_files = []
     for py_file in current_dir.rglob('*.py'):
-        if 'outputs' not in str(py_file):
+        if save_dir.split('/')[1] not in str(py_file):
             py_files.append(py_file)
     for py_file in py_files:
         if sanity_check_dir not in str(py_file):

@@ -1,0 +1,160 @@
+wandb_project: 'EMAGE++'
+exp_name: 'motion_vq'
+debug: False
+wandb_entity: ''
+wandb_key: ""
+wandb_log_dir: ./outputs/wandb
+output_dir: ./outputs/
+log_period: 1
+seed: 222
+resume_from_checkpoint: null
+local_pretrained: null
+test: False
+finetune: False
+peft: null
+
+hyper:
+  all:
+    vae_codebook_size: 
+      value_space: [16, 32, 64, 128, 256]
+      discrete: True
+    vae_layer: 
+      value_space: [2, 4, 6, 8]
+      discrete: True
+    vae_length: 
+      value_space: [96, 128, 144, 256, 384, 512]
+      discrete: True
+    vae_quantizer_lambda: 
+      value_space: [0.8, 1.0]
+      discrete: False
+
+  global_model:
+    vae_layer:
+      value_space: [4, 8]
+      discrete: True
+
+  solver:
+    max_grad_norm:
+      value_space: [0.01, 0.99]
+      discrete: False
+    learning_rate:
+      value_space: [5e-5, 3e-4]
+      discrete: False
+    lr_warmup_steps: 
+      value_space: [0, 100, 200, 500, 1000]
+      discrete: True
+    lr_scheduler: 
+      value_space: ['constant', 'cosine', 'linear']
+      discrete: True
+
+    
+
+smplx:
+  model_path: 'emage_evaltools/smplx_models/smplx'
+  gender: 'NEUTRAL_2020'
+  num_expression_coeffs: 100
+  num_betas: 300
+
+data:
+  name_pyfile: "datasets.fretlyn"
+  class_name: "FretlynDatasetEamgeFootContact"
+  train_bs: 56
+  meta_paths:
+    - "./datasets/data_json/fretlyn_s20_l32_all.json"
+  test_meta_paths: 
+    - "./datasets/data_json/fretlyn_s20_l32_all.json"
+  pose_norm: False
+  audio_norm: False
+  pose_fps: 30
+  motion_f: 256
+  pose_dims: 330
+  pose_rep: "smplx"
+  audio_rep: wave16k
+  audio_sr: 32000
+  audio_fps: 32000
+  joint_mask: null
+  
+face_model:
+  name_pyfile: "models.emage_audio.modeling_emage_audio"
+  class_name: "EmageRVQVAEConv"
+  stride: 20
+  vae_codebook_size: 64
+  vae_grow: [1, 1, 2, 1]
+  vae_layer: 2
+  vae_length: 256
+  vae_quantizer_lambda: 0.25
+  vae_test_dim: 106
+
+upper_model:
+  name_pyfile: "models.emage_audio.modeling_emage_audio"
+  class_name: "EmageRVQVAEConv"
+  stride: 20
+  vae_codebook_size: 64
+  vae_grow: [1, 1, 2, 1]
+  vae_layer: 2
+  vae_length: 256
+  vae_quantizer_lambda: 0.25
+  vae_test_dim: 78
+
+lower_model:
+  name_pyfile: "models.emage_audio.modeling_emage_audio"
+  class_name: "EmageRVQVAEConv"
+  stride: 20
+  vae_codebook_size: 64
+  vae_grow: [1, 1, 2, 1]
+  vae_layer: 2
+  vae_length: 256
+  vae_quantizer_lambda: 0.25
+  vae_test_dim: 61
+
+hands_model:
+  name_pyfile: "models.emage_audio.modeling_emage_audio"
+  class_name: "EmageRVQVAEConv"
+  stride: 20
+  vae_codebook_size: 64
+  vae_grow: [1, 1, 2, 1]
+  vae_layer: 2
+  vae_length: 256
+  vae_quantizer_lambda: 0.25
+  vae_test_dim: 180
+
+global_model:
+  name_pyfile: "models.emage_audio.modeling_emage_audio"
+  class_name: "EmageVAEConv"
+  stride: 20
+  vae_codebook_size: 64
+  vae_grow: [1, 1, 2, 1]
+  vae_layer: 4
+  vae_length: 256
+  vae_quantizer_lambda: 0.25
+  vae_test_dim: 61
+ 
+validation:
+  validation_steps: 200
+  test_steps: 1000
+  visualization: False
+  evaluation: False
+  wandb: True
+
+solver:
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: False
+  max_train_steps: 100000
+  max_grad_norm: 0.1
+  # lr
+  enc_dec:
+    learning_rate: 1.5e-4
+    scale_lr: False
+    lr_warmup_steps: 0
+    lr_scheduler: 'constant'
+  quantizer:
+    learning_rate: 1.5e-4
+    scale_lr: False
+    lr_warmup_steps: 0
+    lr_scheduler: 'constant'
+  # optimizer
+  use_8bit_adam: False
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_weight_decay: 0.0
+  adam_epsilon: 1.0e-8
