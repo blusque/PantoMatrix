@@ -1,18 +1,20 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel
+from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, EmageRVQVAEConv
 import emage_utils.rotation_conversions as rc
 from torchvision.io import write_video
 from emage_utils import fast_render
 from smplx import SMPLX
 from emage_utils.motion_io import beat_format_save
 from scipy.spatial.transform import Rotation as R
+import time
 
 import pandas as pd
 
+local_time = time.strftime('%Y%m%d_%H%M%S', time.localtime())
 data_folder = './data/fretlyn'
-save_folder_base = './data/reconstruct'
+save_folder_base = f'./data/reconstruct_{local_time}'
 device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
 def evaluate(gt, pred):
@@ -59,11 +61,11 @@ if __name__ == '__main__':
     test_id = df[df['type'] == 'test']['id'].to_list()
     smplx_files = [file for file in os.listdir('data/fretlyn/smplxflame_30') if file.endswith('.npz')]
     eval = np.zeros((len(smplx_files)))
-    face_motion_vq = EmageVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250326-1256/checkpoints/best/vq_face").to(device)
-    upper_motion_vq = EmageVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250326-1256/checkpoints/best/vq_upper").to(device)
-    lower_motion_vq = EmageVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250326-1256/checkpoints/best/vq_lower").to(device)
-    hands_motion_vq = EmageVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250326-1256/checkpoints/best/vq_hands").to(device)
-    global_motion_ae = EmageVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250326-1256/checkpoints/best/global").to(device)
+    face_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250329-0107/checkpoints/best/vq_face").to(device)
+    upper_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250329-0107/checkpoints/best/vq_upper").to(device)
+    lower_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250329-0107/checkpoints/best/vq_lower").to(device)
+    hands_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250329-0107/checkpoints/best/vq_hands").to(device)
+    global_motion_ae = EmageVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250329-0107/checkpoints/best/global").to(device)
     motion_model = EmageVQModel(
         face_model=face_motion_vq, upper_model=upper_motion_vq,
         hands_model=hands_motion_vq, lower_model=lower_motion_vq,

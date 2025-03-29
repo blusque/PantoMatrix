@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import copy
 
 def _copysign(a, b):
     signs_differ = (a < 0) != (b < 0)
@@ -130,6 +131,57 @@ def recover_from_mask_ts(selected_motion: torch.Tensor, mask: list) -> torch.Ten
     final_shape = list(recovered.shape[:-2]) + [j*c_channels]
     recovered = recovered.reshape(final_shape)
     return recovered
+
+# Code from https://zhuanlan.zhihu.com/p/68748778
+class EMA():
+    def __init__(self, model, decay, warmup_steps=0):
+        self.model = model
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+
+    def register(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    def update(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                device = param.data.device
+                new_average = (1.0 - self.decay) * param.data + self.decay * self.shadow[name].to(device)
+                self.shadow[name] = new_average.clone()
+
+    def apply_shadow(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.shadow
+                self.backup[name] = param.data
+                device = param.data.device
+                param.data = self.shadow[name].to(device)
+
+    def restore(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad:
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
+
+# # 初始化
+# ema = EMA(model, 0.999)
+# ema.register()
+
+# # 训练过程中，更新完参数后，同步update shadow weights
+# def train():
+#     optimizer.step()
+#     ema.update()
+
+# # eval前，apply shadow weights；eval之后，恢复原来模型的参数
+# def evaluate():
+#     ema.apply_shadow()
+#     # evaluate
+#     ema.restore()
 
 
 class Quantizer(nn.Module):

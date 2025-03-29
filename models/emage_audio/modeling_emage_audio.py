@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
+from torch.optim.swa_utils import AveragedModel
 import torch.nn.functional as F
 import math
 import copy
 from transformers import PreTrainedModel
 from .configuration_emage_audio import EmageAudioConfig, EmageVQVAEConvConfig, EmageVAEConvConfig
-from .processing_emage_audio import Quantizer, ResidualQuantizer, VQEncoderV5, VQDecoderV5, WavEncoder, MLP, PeriodicPositionalEncoding, VQEncoderV6, recover_from_mask_ts, rotation_6d_to_axis_angle, velocity2position, axis_angle_to_rotation_6d, rotation_6d_to_matrix, matrix_to_axis_angle, axis_angle_to_matrix, matrix_to_rotation_6d
+from .processing_emage_audio import Quantizer, ResidualQuantizer, VQEncoderV5, VQDecoderV5, WavEncoder, MLP, PeriodicPositionalEncoding, VQEncoderV6, recover_from_mask_ts, rotation_6d_to_axis_angle, velocity2position, axis_angle_to_rotation_6d, rotation_6d_to_matrix, matrix_to_axis_angle, axis_angle_to_matrix, matrix_to_rotation_6d, EMA
 import os
 
 def inverse_selection_tensor(filtered_t, selection_array, n):
@@ -77,11 +78,38 @@ class EmageRVQVAEConv(PreTrainedModel):
         self.encoder = VQEncoderV5(config)
         self.quantizer = ResidualQuantizer(config.vae_codebook_size, config.vae_length, config.vae_quantizer_lambda)
         self.decoder = VQDecoderV5(config)
+        self.use_ema = False
+        if config.use_ema:
+            self.use_ema = True
+            self.ema_lambda = config.ema_lambda
+            self.encoder_ema = EMA(self.encoder, self.ema_lambda)
+            self.encoder_ema.register()
+            self.quantizer_ema = EMA(self.quantizer, self.ema_lambda)
+            self.quantizer_ema.register()
+            self.decoder_ema = EMA(self.decoder, self.ema_lambda)
+            self.decoder_ema.register()
+
     def forward(self, inputs):
         pre_latent = self.encoder(inputs)
         embedding_loss, vq_latent, indices_list, perplexity_list = self.quantizer(pre_latent)
         rec_pose = self.decoder(vq_latent)
         return {"poses_feat": vq_latent, "embedding_loss": embedding_loss, "perplexity": perplexity_list, "rec_pose": rec_pose, 'indices': indices_list}
+    
+    def update_ema(self):
+        self.encoder_ema.update()
+        self.quantizer_ema.update()
+        self.decoder_ema.update()
+
+    def apply_ema(self):
+        self.encoder_ema.apply_shadow()
+        self.quantizer_ema.apply_shadow()
+        self.decoder_ema.apply_shadow()
+
+    def restore(self):
+        self.encoder_ema.restore()
+        self.quantizer_ema.restore()
+        self.decoder_ema.restore()
+
     def map2index(self, inputs):
         pre_latent = self.encoder(inputs)
         index = self.quantizer.map2index(pre_latent)
@@ -110,7 +138,7 @@ class EmageRVQVAEConv(PreTrainedModel):
     #     return rec_pose
 
 class EmageVQModel(nn.Module):
-    def __init__(self, face_model: EmageVQVAEConv, upper_model: EmageVQVAEConv, hands_model: EmageVQVAEConv, lower_model: EmageVQVAEConv, global_model: EmageVAEConv):
+    def __init__(self, face_model: EmageRVQVAEConv, upper_model: EmageRVQVAEConv, hands_model: EmageRVQVAEConv, lower_model: EmageRVQVAEConv, global_model: EmageVAEConv):
         super().__init__()
         self.joint_mask_upper = [
           False, False, False, True, False, False, True, False, False, True,
@@ -321,6 +349,40 @@ class EmageVQModel(nn.Module):
         hands_embeddings = self.vq_model_hands.quantizer.get_codebook_entry(hands_index)
         lower_embeddings = self.vq_model_lower.quantizer.get_codebook_entry(lower_index)
         return dict(face=face_embeddings, upper=upper_embeddings, hands=hands_embeddings, lower=lower_embeddings)
+
+    def update_ema(self):
+        if self.vq_model_face.use_ema:
+            self.vq_model_face.update_ema()
+        if self.vq_model_hands.use_ema:
+            self.vq_model_hands.update_ema()
+        if self.vq_model_upper.use_ema:
+            self.vq_model_upper.update_ema()
+        if self.vq_model_lower.use_ema:
+            self.vq_model_lower.update_ema()
+
+    def apply_ema(self):
+        if self.vq_model_face.use_ema:
+            self.vq_model_face.apply_ema()
+        if self.vq_model_hands.use_ema:
+            self.vq_model_hands.apply_ema()
+        if self.vq_model_upper.use_ema:
+            self.vq_model_upper.apply_ema()
+        if self.vq_model_lower.use_ema:
+            self.vq_model_lower.apply_ema()
+
+    def restore(self):
+        if self.vq_model_face.use_ema:
+            self.vq_model_face.restore()
+        if self.vq_model_hands.use_ema:
+            self.vq_model_hands.restore()
+        if self.vq_model_upper.use_ema:
+            self.vq_model_upper.restore()
+        if self.vq_model_lower.use_ema:
+            self.vq_model_lower.restore()
+
+    def eval(self):
+        super().eval()
+        self.apply_ema()
 
 
 class EmageAudioModel(PreTrainedModel):

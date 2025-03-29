@@ -201,8 +201,10 @@ def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kw
         if isinstance(kwargs['optimizer'], dict):
             for optimizer in kwargs["optimizer"].values():
                 optimizer.step()
+            actual_model.update_ema()
         else:
             kwargs["optimizer"].step()
+            actual_model.update_ema()
         if isinstance(kwargs['lr_scheduler'], dict):
             for lr_scheduler in kwargs["lr_scheduler"].values():
                 lr_scheduler.step()

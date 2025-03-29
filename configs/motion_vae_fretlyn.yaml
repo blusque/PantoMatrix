@@ -84,6 +84,8 @@ face_model:
   vae_length: 256
   vae_quantizer_lambda: 0.25
   vae_test_dim: 106
+  use_ema: True
+  ema_lambda: 0.99
 
 upper_model:
   name_pyfile: "models.emage_audio.modeling_emage_audio"
@@ -95,6 +97,8 @@ upper_model:
   vae_length: 256
   vae_quantizer_lambda: 0.25
   vae_test_dim: 78
+  use_ema: True
+  ema_lambda: 0.99
 
 lower_model:
   name_pyfile: "models.emage_audio.modeling_emage_audio"
@@ -106,6 +110,8 @@ lower_model:
   vae_length: 256
   vae_quantizer_lambda: 0.25
   vae_test_dim: 61
+  use_ema: True
+  ema_lambda: 0.99
 
 hands_model:
   name_pyfile: "models.emage_audio.modeling_emage_audio"
@@ -117,6 +123,8 @@ hands_model:
   vae_length: 256
   vae_quantizer_lambda: 0.25
   vae_test_dim: 180
+  use_ema: True
+  ema_lambda: 0.99
 
 global_model:
   name_pyfile: "models.emage_audio.modeling_emage_audio"
