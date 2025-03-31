@@ -125,6 +125,9 @@ class EmageRVQVAEConv(PreTrainedModel):
         z_q = self.quantizer.cumsum(z_qs)
         rec_pose = self.decoder(z_q)
         return rec_pose
+    
+    def update_codebook(self):
+        self.quantizer.update_codebook()
     # def decode_from_latent(self, latent):
     #     # print(latent.shape)
     #     z_flattened = latent.contiguous().view(-1, self.quantizer.e_dim)
@@ -383,6 +386,12 @@ class EmageVQModel(nn.Module):
     def eval(self):
         super().eval()
         self.apply_ema()
+
+    def update_codebook(self):
+        self.vq_model_face.update_codebook()
+        self.vq_model_hands.update_codebook()
+        self.vq_model_upper.update_codebook()
+        self.vq_model_lower.update_codebook()
 
 
 class EmageAudioModel(PreTrainedModel):

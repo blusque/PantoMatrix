@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from torch.nn.parallel import DistributedDataParallel as DDP
 import wandb
 import math
+import emage_utils.rotation_conversions as rc
 
 from diffusers.optimization import get_scheduler
 from omegaconf import OmegaConf
@@ -99,6 +100,19 @@ def inference_fn(cfg, motion_vq: EmageVQModel, device, test_path, save_path, **k
     time_cost = time.time() - start_time
     print(f"\n cost {time_cost:.2f} seconds to generate {total_length / cfg.data.pose_fps:.2f} seconds of motion")
     return test_list, save_list
+
+def get_ang_vel_from_rot(local_rotation: torch.Tensor, parents):
+    local_rotation_mat = rc.axis_angle_to_matrix(local_rotation)
+    orientation_mat = torch.zeros_like(local_rotation_mat)
+    for i in range(len(parents)):
+        pi = parents[i]
+        if pi == -1:
+            orientation_mat[:, :, i, ...] = local_rotation_mat[:, :, i, ...].clone()
+        else:
+            orientation_mat[:, :, i, ...] = orientation_mat[:, :, pi, ...].clone() @ local_rotation_mat[:, :, i, ...]
+    ang_vel_mat = orientation_mat[:, :-1, ...].transpose(-1, -2) @ orientation_mat[:, 1:, ...]
+    ang_vel = rc.matrix_to_axis_angle(ang_vel_mat)
+    return ang_vel
 
 def get_rec_loss(motion_pred, motion_gt):
     return F.mse_loss(motion_pred, motion_gt)
@@ -183,15 +197,19 @@ def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kw
     motion_pred_pos = motion_pred_pos.reshape(bs, t, 55, 3)
 
     motion_pred_vel = torch.diff(motion_pred_pos, dim=1)
+    motion_pred_ang_vel = get_ang_vel_from_rot(motion_pred_axis_angle.reshape(bs, t, 55, 3), smplx.parents)
     loss_dict = {
         'rec_rot_seed': get_rec_loss(motion_pred_axis_angle, motion_gt_axis_angle),
         "rec_pos_seed": get_rec_loss(motion_pred_pos, motion_gt_pos),
         'trans_seed': get_trans_loss(motion_pred_trans, motion_gt_trans),
         'embedding_seed': motion_pred_dict['embedding_loss'],
-        "vel_seed": get_vel_loss(motion_pred_vel)
+        "vel_seed": get_vel_loss(motion_pred_vel),
+        "ang_vel_seed": get_vel_loss(motion_pred_ang_vel)
     }
     
-    all_loss = sum(loss_dict.values())
+    all_loss = 0
+    for key, loss in loss_dict.items():
+        all_loss += cfg.loss_weights[key] * loss
     loss_dict["all"] = all_loss
   
     if mode == "train":
@@ -205,6 +223,7 @@ def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kw
         else:
             kwargs["optimizer"].step()
             actual_model.update_ema()
+            actual_model.update_codebook()
         if isinstance(kwargs['lr_scheduler'], dict):
             for lr_scheduler in kwargs["lr_scheduler"].values():
                 lr_scheduler.step()
@@ -289,21 +308,23 @@ def main(cfg):
                 enc_dec_params.append(p)
     enc_dec_optimizer_cls = torch.optim.AdamW
     quantizer_optimizer_cls = torch.optim.SGD
-    enc_dec_optimizer = enc_dec_optimizer_cls(
-        enc_dec_params,
-        lr=cfg.solver.enc_dec.learning_rate,
-        betas=(cfg.solver.adam_beta1, cfg.solver.adam_beta2),
-        weight_decay=cfg.solver.adam_weight_decay,
-        eps=cfg.solver.adam_epsilon
-    )
-    quantizer_optimizer = quantizer_optimizer_cls(
-        quantizer_params,
-        lr=cfg.solver.quantizer.learning_rate
-    )
-    optimizers = {
-        'enc_dec': enc_dec_optimizer,
-        'quantizer': quantizer_optimizer
-    }
+    optimizers = {}
+    if len(enc_dec_params) > 0:
+        enc_dec_optimizer = enc_dec_optimizer_cls(
+            enc_dec_params,
+            lr=cfg.solver.enc_dec.learning_rate,
+            betas=(cfg.solver.adam_beta1, cfg.solver.adam_beta2),
+            weight_decay=cfg.solver.adam_weight_decay,
+            eps=cfg.solver.adam_epsilon
+        )
+        optimizers['enc_dec'] = enc_dec_optimizer
+    if len(quantizer_params) > 0:
+        quantizer_optimizer = quantizer_optimizer_cls(
+            quantizer_params,
+            lr=cfg.solver.quantizer.learning_rate
+        )
+        optimizers['quantizer'] = quantizer_optimizer
+    assert len(optimizers.keys()) > 0, "No optimizer"
     lr_schedulers = {}
     for key, opt in optimizers.items():
         lr_cfg = cfg.solver.__getattr__(key)

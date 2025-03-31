@@ -190,8 +190,12 @@ class Quantizer(nn.Module):
         self.e_dim = e_dim
         self.n_e = n_e
         self.beta = beta
+        self.ema_lambda = 0.99
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
+        self.embedding.requires_grad_(False)
         self.init_weights()
+        self.register_buffer('N_t', torch.zeros(self.n_e, dtype=torch.float32, requires_grad=False))
+        self.register_buffer('m_t', torch.zeros(self.n_e, self.e_dim, dtype=torch.float32, requires_grad=False))
 
     def forward(self, z):
         assert z.shape[-1] == self.e_dim
@@ -199,13 +203,26 @@ class Quantizer(nn.Module):
         d = torch.sum(z_flattened**2, dim=1, keepdim=True) + \
             torch.sum(self.embedding.weight**2, dim=1) - 2*torch.matmul(z_flattened, self.embedding.weight.t())
         min_encoding_indices = torch.argmin(d, dim=1)
+        indices_selected, encoding_counts = torch.unique(min_encoding_indices, return_counts=True)
+        with torch.no_grad():
+            self.N_t[indices_selected] = self.N_t[indices_selected] * self.ema_lambda + encoding_counts * (1 - self.ema_lambda)
+            E_x = []
+            for idx in indices_selected:
+                E_x.append(torch.sum((min_encoding_indices == idx).to(torch.float32).unsqueeze(-1) * z_flattened, dim=0)[None, ...])
+            E_x = torch.cat(E_x, dim=0)
+            self.m_t[indices_selected] = self.m_t[indices_selected] * self.ema_lambda + E_x * (1 - self.ema_lambda)
         z_q = self.embedding(min_encoding_indices).view(z.shape)
-        loss = torch.mean((z_q - z.detach())**2) + self.beta*torch.mean((z_q.detach() - z)**2)
+        # loss = torch.mean((z_q - z.detach())**2) + self.beta*torch.mean((z_q.detach() - z)**2)
+        loss = self.beta*torch.mean((z_q.detach() - z)**2)  # the first term is replaced by ema + meanshift
         z_q = z + (z_q - z).detach()
         min_encodings = F.one_hot(min_encoding_indices, self.n_e).type(z.dtype)
         e_mean = torch.mean(min_encodings, dim=0)
         perplexity = torch.exp(-torch.sum(e_mean*torch.log(e_mean+1e-10)))
         return loss, z_q, min_encoding_indices, perplexity
+    
+    @torch.no_grad()
+    def update_codebook(self):
+        self.embedding.weight.data = self.m_t / self.N_t.unsqueeze(-1)   # update the codebook
 
     def map2index(self, z):
         assert z.shape[-1] == self.e_dim
@@ -288,6 +305,10 @@ class ResidualQuantizer(nn.Module):
         for residual in residuals:
             result += residual
         return result
+    
+    def update_codebook(self):
+        for quantizer in self.quantizers:
+            quantizer.update_codebook()
         
 
 def init_weight(m):

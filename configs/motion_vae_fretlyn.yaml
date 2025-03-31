@@ -13,6 +13,15 @@ test: False
 finetune: False
 peft: null
 
+loss_weights: 
+  rec_rot_seed: 1
+  rec_pos_seed: 1
+  embedding_seed: 1
+  trans_seed: 0
+  vel_seed: 0
+  ang_vel_seed: 0.1
+
+
 hyper:
   all:
     vae_codebook_size: 
@@ -130,11 +139,9 @@ global_model:
   name_pyfile: "models.emage_audio.modeling_emage_audio"
   class_name: "EmageVAEConv"
   stride: 20
-  vae_codebook_size: 64
   vae_grow: [1, 1, 2, 1]
-  vae_layer: 4
+  vae_layer: 8
   vae_length: 256
-  vae_quantizer_lambda: 0.25
   vae_test_dim: 61
  
 validation:
@@ -147,8 +154,8 @@ validation:
 solver:
   gradient_accumulation_steps: 1
   gradient_checkpointing: False
-  max_train_steps: 100000
-  max_grad_norm: 0.1
+  max_train_steps: 300000
+  max_grad_norm: 0.99
   # lr
   enc_dec:
     learning_rate: 1.5e-4
