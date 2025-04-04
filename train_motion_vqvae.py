@@ -28,13 +28,13 @@ from emage_utils.motion_io import beat_format_load, beat_format_save, SMPLX_MASK
 import emage_utils.rotation_conversions as rc
 from emage_utils import fast_render
 from emage_utils.motion_rep_transfer import get_motion_rep_numpy
-from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, EmageAudioModel
+from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageRVQModel, EmageAudioModel
 from peft import LoraConfig, get_peft_model, TaskType
 from smplx import SMPLX
 from smplx.lbs import lbs
 
 # ---------------------------------  train,val,test fn here --------------------------------- #
-def inference_fn(cfg, motion_vq: EmageVQModel, device, test_path, save_path, **kwargs):
+def inference_fn(cfg, motion_vq: EmageRVQModel, device, test_path, save_path, **kwargs):
     actual_model = motion_vq.module if isinstance(motion_vq, torch.nn.parallel.DistributedDataParallel) else motion_vq
     actual_model.eval()
     test_list = []
@@ -141,7 +141,7 @@ def get_commitment_loss(ze: dict, zq: dict, beta):
         total_loss += F.mse_loss(ze[key], sg_zq)
     return total_loss
 
-def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kwargs):
+def train_val_fn(cfg, batch, motion_vq: EmageRVQModel, device, mode="train", **kwargs):
     if mode == "train":
         actual_model = motion_vq.module if isinstance(motion_vq, torch.nn.parallel.DistributedDataParallel) else motion_vq
         actual_model.train()
@@ -197,6 +197,8 @@ def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kw
     motion_pred_pos = motion_pred_pos.reshape(bs, t, 55, 3)
 
     motion_pred_vel = torch.diff(motion_pred_pos, dim=1)
+
+    motion_pred_trans_vel = torch.diff(motion_pred_trans, dim=1)
     motion_pred_ang_vel = get_ang_vel_from_rot(motion_pred_axis_angle.reshape(bs, t, 55, 3), smplx.parents)
     loss_dict = {
         'rec_rot_seed': get_rec_loss(motion_pred_axis_angle, motion_gt_axis_angle),
@@ -204,6 +206,7 @@ def train_val_fn(cfg, batch, motion_vq: EmageVQModel, device, mode="train", **kw
         'trans_seed': get_trans_loss(motion_pred_trans, motion_gt_trans),
         'embedding_seed': motion_pred_dict['embedding_loss'],
         "vel_seed": get_vel_loss(motion_pred_vel),
+        "trans_vel_seed": get_vel_loss(motion_pred_trans_vel),
         "ang_vel_seed": get_vel_loss(motion_pred_ang_vel)
     }
     
@@ -278,7 +281,7 @@ def main(cfg):
     # hands_motion_vq = EmageVQVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/hands").to(device)
     # global_motion_ae = EmageVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/global").to(device)
 
-    motion_vq = EmageVQModel(
+    motion_vq = EmageRVQModel(
       face_model=face_motion_vq, upper_model=upper_motion_vq,
       lower_model=lower_motion_vq, hands_model=hands_motion_vq,
       global_model=global_motion_ae).to(device)

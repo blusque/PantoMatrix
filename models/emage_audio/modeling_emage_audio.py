@@ -141,6 +141,219 @@ class EmageRVQVAEConv(PreTrainedModel):
     #     return rec_pose
 
 class EmageVQModel(nn.Module):
+    def __init__(self, face_model: EmageVQVAEConv, upper_model: EmageVQVAEConv, hands_model: EmageVQVAEConv, lower_model: EmageVQVAEConv, global_model: EmageVAEConv):
+        super().__init__()
+        self.joint_mask_upper = [
+          False, False, False, True, False, False, True, False, False, True,
+          False, False, True, True, True, True, True, True, True, True,
+          True, True, False, False, False, False, False, False, False, False,
+          False, False, False, False, False, False, False, False, False, False,
+          False, False, False, False, False, False, False, False, False, False,
+          False, False, False, False, False
+        ]
+        self.joint_mask_lower = [
+          True, True, True, False, True, True, False, True, True, False,
+          True, True, False, False, False, False, False, False, False, False,
+          False, False, False, False, False, False, False, False, False, False,
+          False, False, False, False, False, False, False, False, False, False,
+          False, False, False, False, False, False, False, False, False, False,
+          False, False, False, False, False
+        ]
+        self.vq_model_face = face_model
+        self.vq_model_upper = upper_model
+        self.vq_model_hands = hands_model
+        self.vq_model_lower = lower_model
+        self.global_motion = global_model
+
+    def spilt_inputs(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        '''
+        Split input motions into different parts
+        
+        :smplx_body_rot6d: smplx body pose parameters represented in rotation 6d format.
+        :expression: flame expression parameters represented in 100 dims.
+        :tar_contact: 
+        :tar_trans:
+
+        
+        '''
+        bs, t, j6 = smplx_body_rot6d.shape
+        smplx_body_rot6d = smplx_body_rot6d.reshape(bs, t, j6//6, 6)
+        jaw_rot6d = smplx_body_rot6d[:, :, 22:23, :].reshape(bs, t, 6)
+        face = torch.cat([jaw_rot6d, expression], dim=2)
+        upper_rot6d = smplx_body_rot6d[:, :,self.joint_mask_upper, :].reshape(bs, t, 78)
+        hands_rot6d = smplx_body_rot6d[:, :,25:55, :].reshape(bs, t, 180)
+        lower_rot6d = smplx_body_rot6d[:, :,self.joint_mask_lower, :].reshape(bs, t, 54)
+        tar_contact = torch.zeros(bs, t, 4, device=smplx_body_rot6d.device) if tar_contact is None else tar_contact
+        tar_trans = torch.zeros(bs, t, 3, device=smplx_body_rot6d.device) if tar_trans is None else tar_trans
+        lower = torch.cat([lower_rot6d, tar_trans, tar_contact], dim=2)
+        return dict(face=face, upper=upper_rot6d, hands=hands_rot6d, lower=lower)
+    
+    def forward(self, smplx_body_rot6d, expression, tar_contact=None, get_global_motion=False, tar_trans=None):
+        bs, t = smplx_body_rot6d.shape[:2]
+        inputs = self.spilt_inputs(smplx_body_rot6d, expression, tar_contact=tar_contact, tar_trans=tar_trans)
+        face_output = self.vq_model_face(inputs['face'])
+        upper_output = self.vq_model_upper(inputs['upper'])
+        hands_output = self.vq_model_hands(inputs['hands'])
+        lower_output = self.vq_model_lower(inputs['lower'])
+        face_mix = face_output['rec_pose']
+        face_jaw_6d, expression = face_mix[:, :, :6], face_mix[:, :, 6:]
+        face_jaw = rotation_6d_to_axis_angle(face_jaw_6d)
+        upper_6d = upper_output['rec_pose']
+        upper = rotation_6d_to_axis_angle(upper_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        hands_6d = hands_output['rec_pose']
+        hands = rotation_6d_to_axis_angle(hands_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        lower_mix = lower_output['rec_pose']
+        lower_6d, transfoot = lower_mix[:, :, :-7], lower_mix[:, :, -7:]
+        lower = rotation_6d_to_axis_angle(lower_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+
+        upper2all = recover_from_mask_ts(upper, self.joint_mask_upper)
+        hands2all = recover_from_mask_ts(hands, [False]*25+[True]*30)
+        lower2all = recover_from_mask_ts(lower, self.joint_mask_lower)
+        
+        all_motion_axis_angle = upper2all + hands2all + lower2all
+        all_motion_axis_angle[:, :, 22*3:22*3+3] = face_jaw
+        all_motion_rot6d = axis_angle_to_rotation_6d(all_motion_axis_angle.reshape(bs, t, 55, 3)).reshape(bs, t, 55*6)
+
+        all_motion4inference = torch.cat([all_motion_rot6d, transfoot], dim=2) # 330 + 3 + 4
+        
+        global_motion = None
+        if get_global_motion:
+            global_motion = self.get_global_motion(lower_mix, tar_trans)
+
+        embedding_loss = face_output['embedding_loss'] + upper_output['embedding_loss'] + hands_output['embedding_loss'] + lower_output['embedding_loss']
+
+        perplexity = {
+            'face': face_output['perplexity'],
+            'upper': upper_output['perplexity'],
+            'hands': hands_output['perplexity'],
+            'lower': lower_output['perplexity']
+        }
+
+        min_embedding_indices = {
+            'face': face_output['indices'],
+            'upper': upper_output['indices'],
+            'hands': hands_output['indices'],
+            'lower': lower_output['indices']
+        }
+
+        return dict(expression=expression, all_motion4inference=all_motion4inference, motion_axis_angle=all_motion_axis_angle, trans=global_motion, embedding_loss=embedding_loss, perplexity=perplexity, indices=min_embedding_indices)
+
+    
+    def map2index(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        inputs = self.spilt_inputs(smplx_body_rot6d, expression, tar_contact=tar_contact, tar_trans=tar_trans)
+        face_index = self.vq_model_face.map2index(inputs["face"])
+        upper_index = self.vq_model_upper.map2index(inputs["upper"])
+        hands_index = self.vq_model_hands.map2index(inputs["hands"])
+        lower_index = self.vq_model_lower.map2index(inputs["lower"])
+        return dict(face=face_index, upper=upper_index, hands=hands_index, lower=lower_index)
+    
+    def map2latent(self, smplx_body_rot6d, expression, tar_contact=None, tar_trans=None):
+        inputs = self.spilt_inputs(smplx_body_rot6d, expression,tar_contact=tar_contact, tar_trans=tar_trans)
+        face_latent = self.vq_model_face.map2latent(inputs["face"])
+        upper_latent = self.vq_model_upper.map2latent(inputs["upper"])
+        hands_latent = self.vq_model_hands.map2latent(inputs["hands"])
+        lower_latent = self.vq_model_lower.map2latent(inputs["lower"])
+        return dict(face=face_latent, upper=upper_latent, hands=hands_latent, lower=lower_latent)
+    
+    def decode(self, face_index=None, upper_index=None, hands_index=None, lower_index=None, 
+               face_latent=None, upper_latent=None, hands_latent=None, lower_latent=None, 
+            get_global_motion=False, ref_trans=None):
+        
+        for input_tensor in [face_index, upper_index, hands_index, lower_index, face_latent, upper_latent, hands_latent, lower_latent]:
+            if input_tensor is not None:
+                if isinstance(input_tensor, list):
+                    bs, t = input_tensor[0].shape[:2]
+                else:
+                    bs, t = input_tensor.shape[:2]
+                break
+  
+        if face_index is not None:
+            face_mix = self.vq_model_face.decode(face_index) # bs, t, 106
+            face_jaw_6d, expression = face_mix[:, :, :6], face_mix[:, :, 6:]
+            face_jaw = rotation_6d_to_axis_angle(face_jaw_6d)
+        elif face_latent is not None:
+            face_mix = self.vq_model_face.decode_from_latent(face_latent)
+            face_jaw_6d, expression = face_mix[:, :, :6], face_mix[:, :, 6:]
+            face_jaw = rotation_6d_to_axis_angle(face_jaw_6d)
+        else:
+            face_jaw = torch.zeros(bs, t, 3, device=self.vq_model_face.device)
+            expression = torch.zeros(bs, t, 100, device=self.vq_model_face.device)
+
+        if upper_index is not None:
+            # print(upper_index)
+            upper_6d = self.vq_model_upper.decode(upper_index) # bs, t, 78
+            upper = rotation_6d_to_axis_angle(upper_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        elif upper_latent is not None:
+            upper_6d = self.vq_model_upper.decode_from_latent(upper_latent)
+            upper = rotation_6d_to_axis_angle(upper_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        else:
+            upper = torch.zeros(bs, t, 39, device=self.vq_model_upper.device)
+
+        if hands_index is not None:
+            hands_6d = self.vq_model_hands.decode(hands_index)
+            hands = rotation_6d_to_axis_angle(hands_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        elif hands_latent is not None:
+            hands_6d = self.vq_model_hands.decode_from_latent(hands_latent)
+            hands = rotation_6d_to_axis_angle(hands_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        else:
+            hands = torch.zeros(bs, t, 90, device=self.vq_model_hands.device)
+        
+        if lower_index is not None:
+            lower_mix = self.vq_model_lower.decode(lower_index)
+            lower_6d, transfoot = lower_mix[:, :, :-7], lower_mix[:, :, -7:]
+            lower = rotation_6d_to_axis_angle(lower_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        elif lower_latent is not None:
+            lower_mix = self.vq_model_lower.decode_from_latent(lower_latent)
+            lower_6d, transfoot = lower_mix[:, :, :-7], lower_mix[:, :, -7:]
+            lower = rotation_6d_to_axis_angle(lower_6d.reshape(bs, t, -1, 6)).reshape(bs, t, -1)
+        else:
+            lower = torch.zeros(bs, t, 27, device=self.vq_model_lower.device)
+            transfoot = torch.zeros(bs, t, 7, device=self.vq_model_lower.device)
+            lower_6d = axis_angle_to_rotation_6d(lower.reshape(bs, t, -1, 3)).reshape(bs, t, -1)
+            lower_mix = torch.cat([lower_6d, transfoot], dim=-1)
+
+        upper2all = recover_from_mask_ts(upper, self.joint_mask_upper)
+        hands2all = recover_from_mask_ts(hands, [False]*25+[True]*30)
+        lower2all = recover_from_mask_ts(lower, self.joint_mask_lower)
+        
+        all_motion_axis_angle = upper2all + hands2all + lower2all
+        all_motion_axis_angle[:, :, 22*3:22*3+3] = face_jaw
+        all_motion_rot6d = axis_angle_to_rotation_6d(all_motion_axis_angle.reshape(bs, t, 55, 3)).reshape(bs, t, 55*6)
+
+        all_motion4inference = torch.cat([all_motion_rot6d, transfoot], dim=2) # 330 + 3 + 4
+        
+        global_motion = None
+        if get_global_motion:
+            global_motion = self.get_global_motion(lower_mix, ref_trans)
+        return dict(expression=expression, all_motion4inference=all_motion4inference, motion_axis_angle=all_motion_axis_angle, trans=global_motion)
+    
+    def get_global_motion(self, lower_body, ref_trans):
+        global_motion = self.global_motion(lower_body)
+        rec_trans_v_s = global_motion["rec_pose"][:, :, 54:57]
+        if len(ref_trans.shape) == 2:
+            ref_trans = ref_trans.unsqueeze(0).repeat(rec_trans_v_s.shape[0], 1, 1)
+        
+        rec_x_trans = velocity2position(rec_trans_v_s[:, :, 0:1], 1/30, ref_trans[:, 0, 0:1])
+        rec_z_trans = velocity2position(rec_trans_v_s[:, :, 2:3], 1/30, ref_trans[:, 0, 2:3])
+        rec_y_trans = rec_trans_v_s[:,:,1:2]
+        global_motion = torch.cat([rec_x_trans, rec_y_trans, rec_z_trans], dim=-1)
+        return global_motion
+    
+    def save_pretrained(self, path):
+        self.vq_model_face.save_pretrained(os.path.join(path, 'vq_face'))
+        self.vq_model_hands.save_pretrained(os.path.join(path, 'vq_hands'))
+        self.vq_model_lower.save_pretrained(os.path.join(path, 'vq_lower'))
+        self.vq_model_upper.save_pretrained(os.path.join(path, 'vq_upper'))
+        self.global_motion.save_pretrained(os.path.join(path, 'global'))
+
+    def get_codebook_entry(self, face_index, upper_index, hands_index, lower_index):
+        face_embeddings = self.vq_model_face.quantizer.get_codebook_entry(face_index)
+        upper_embeddings = self.vq_model_upper.quantizer.get_codebook_entry(upper_index)
+        hands_embeddings = self.vq_model_hands.quantizer.get_codebook_entry(hands_index)
+        lower_embeddings = self.vq_model_lower.quantizer.get_codebook_entry(lower_index)
+        return dict(face=face_embeddings, upper=upper_embeddings, hands=hands_embeddings, lower=lower_embeddings)
+
+class EmageRVQModel(nn.Module):
     def __init__(self, face_model: EmageRVQVAEConv, upper_model: EmageRVQVAEConv, hands_model: EmageRVQVAEConv, lower_model: EmageRVQVAEConv, global_model: EmageVAEConv):
         super().__init__()
         self.joint_mask_upper = [

@@ -1,7 +1,7 @@
 wandb_project: 'EMAGE++'
 exp_name: 'motion_vq'
 debug: False
-wandb_entity: ''
+wandb_entity: blusque
 wandb_key: ""
 wandb_log_dir: ./outputs/wandb
 output_dir: ./outputs/
@@ -17,9 +17,10 @@ loss_weights:
   rec_rot_seed: 1
   rec_pos_seed: 1
   embedding_seed: 1
-  trans_seed: 0
-  vel_seed: 0
-  ang_vel_seed: 0.1
+  trans_seed: 0.1
+  vel_seed: 0.01
+  trans_vel_seed: 0.1
+  ang_vel_seed: 0.01
 
 
 hyper:
@@ -140,7 +141,7 @@ global_model:
   class_name: "EmageVAEConv"
   stride: 20
   vae_grow: [1, 1, 2, 1]
-  vae_layer: 8
+  vae_layer: 4
   vae_length: 256
   vae_test_dim: 61
  
@@ -154,7 +155,7 @@ validation:
 solver:
   gradient_accumulation_steps: 1
   gradient_checkpointing: False
-  max_train_steps: 300000
+  max_train_steps: 100000
   max_grad_norm: 0.99
   # lr
   enc_dec:

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.nn.functional as F
-from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, EmageRVQVAEConv
+from models.emage_audio import EmageVQVAEConv, EmageVAEConv, EmageVQModel, EmageRVQVAEConv, EmageRVQModel
 import emage_utils.rotation_conversions as rc
 from torchvision.io import write_video
 from emage_utils import fast_render
@@ -13,7 +13,8 @@ import time
 import pandas as pd
 
 local_time = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-data_folder = './data/fretlyn'
+# data_folder = './data/fretlyn'
+data_folder = './BEAT2/beat_english_v2.0.0'
 save_folder_base = f'./data/reconstruct_{local_time}'
 device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
@@ -49,10 +50,14 @@ def visualize_one(save_folder, audio_path, nopytorch3d=False, side=True):
     #     v2d_body = render2d(motion_dict, (720, 480), face_only=False, remove_global=True)
     #     write_video(npz_path.replace(".npz", "_2dbody.mp4"), v2d_body.permute(0, 2, 3, 1), fps=30)
     #     fast_render.add_audio_to_video(npz_path.replace(".npz", "_2dbody.mp4"), audio_path, npz_path.replace(".npz", "_2dbody_audio.mp4"))
+    # if side:
+    #     fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=False, rotation=R.from_euler('XYZ', [-90, 0, 0], degrees=True))
+    # else:
+    #     fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=False, rotation=R.from_euler('XYZ', [-90, 0, 90], degrees=True))
     if side:
-        fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=True, rotation=R.from_euler('XYZ', [-90, 0, 0], degrees=True))
+        fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=True, rotation=R.from_euler('XYZ', [0, -90, 0], degrees=True))
     else:
-        fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=True, rotation=R.from_euler('XYZ', [-90, 0, 90], degrees=True))
+        fast_render.render_one_sequence(npz_path, gt_path, save_folder, audio_path, model_folder="./emage_evaltools/smplx_models/", remove_transl=True)
 
 if __name__ == '__main__':
     import os
@@ -62,13 +67,25 @@ if __name__ == '__main__':
     df = pd.read_csv(osp.join(data_folder, 'train_test_split.csv'))
     train_id = df[df['type'] == 'train']['id'].to_list()
     test_id = df[df['type'] == 'test']['id'].to_list()
-    smplx_files = [file for file in os.listdir('data/fretlyn/smplxflame_30') if file.endswith('.npz')]
+    # smplx_files = [file for file in os.listdir('data/fretlyn/smplxflame_30') if file.endswith('.npz')]
+    smplx_files = [file for file in os.listdir('BEAT2/beat_english_v2.0.0/smplxflame_30') if file.endswith('.npz')]
     eval = np.zeros((len(smplx_files)))
-    face_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-1640/checkpoints/best/vq_face").to(device)
-    upper_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-1640/checkpoints/best/vq_upper").to(device)
-    lower_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-1640/checkpoints/best/vq_lower").to(device)
-    hands_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-1640/checkpoints/best/vq_hands").to(device)
-    global_motion_ae = EmageVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-1640/checkpoints/best/global").to(device)
+    # face_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-2022/checkpoints/best/vq_face").to(device)
+    # upper_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-2022/checkpoints/best/vq_upper").to(device)
+    # lower_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-2022/checkpoints/best/vq_lower").to(device)
+    # hands_motion_vq = EmageRVQVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-2022/checkpoints/best/vq_hands").to(device)
+    # global_motion_ae = EmageVAEConv.from_pretrained("outputs/motion_vae_fretlyn_20250331-2022/checkpoints/best/global").to(device)
+    # motion_model = EmageRVQModel(
+    #     face_model=face_motion_vq, upper_model=upper_motion_vq,
+    #     hands_model=hands_motion_vq, lower_model=lower_motion_vq,
+    #     global_model=global_motion_ae
+    # )
+
+    face_motion_vq = EmageVQVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/face").to(device)
+    upper_motion_vq = EmageVQVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/upper").to(device)
+    lower_motion_vq = EmageVQVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/lower").to(device)
+    hands_motion_vq = EmageVQVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/hands").to(device)
+    global_motion_ae = EmageVAEConv.from_pretrained("H-Liu1997/emage_audio", subfolder="emage_vq/global").to(device)
     motion_model = EmageVQModel(
         face_model=face_motion_vq, upper_model=upper_motion_vq,
         hands_model=hands_motion_vq, lower_model=lower_motion_vq,
@@ -86,7 +103,8 @@ if __name__ == '__main__':
         if not osp.exists(save_folder):
             os.mkdir(save_folder)
         video_id = smplx_file.strip('.npz')
-        smplx = np.load(osp.join('data/fretlyn/smplxflame_30', smplx_file), allow_pickle=True)
+        # smplx = np.load(osp.join('data/fretlyn/smplxflame_30', smplx_file), allow_pickle=True)
+        smplx = np.load(osp.join('BEAT2/beat_english_v2.0.0/smplxflame_30', smplx_file), allow_pickle=True)
         input_motion = smplx['poses']
         input_trans = smplx['trans']
         t, _ = input_motion.shape
